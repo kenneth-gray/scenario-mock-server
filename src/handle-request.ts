@@ -128,6 +128,7 @@ async function handleRequest({
 
 	return result;
 
+	// TODO: I don't think this is needed any more
 	function localUpdateContext(partialContext: PartialContext) {
 		const newContext = updateContext(getContext(), partialContext);
 

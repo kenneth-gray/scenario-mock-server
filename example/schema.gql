@@ -1,0 +1,29 @@
+type Query {
+	version: String!
+	user(id: ID!): User!
+	users: [User!]!
+}
+
+type Mutation {
+	createUser(input: UserInput!): User!
+}
+
+type User {
+	id: ID!
+	name: String!
+	email: String!
+	marketingPreferences: [MarketingPreference!]
+	friends: [User!]!
+}
+
+enum MarketingPreference {
+	EMAIL
+	SMS
+	POST
+	PHONE
+}
+
+input UserInput {
+	name: String!
+	email: String!
+}

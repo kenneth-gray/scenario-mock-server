@@ -15,6 +15,7 @@ function isHttpMock(mock: Mock): mock is HttpMock {
 	return mock.method !== 'GRAPHQL';
 }
 
+// TODO: Extend context as well?
 function getHttpMocks(mocks: Mock[]) {
 	const initialHttpMocks = mocks.filter(isHttpMock);
 

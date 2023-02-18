@@ -1,10 +1,10 @@
+import { DefinitionNode, Kind, OperationDefinitionNode } from 'graphql';
 import gql from 'graphql-tag';
-import z from 'zod';
+import z, { promise } from 'zod';
 
 import { createHandler } from './create-handler';
 import {
 	GraphQlMock,
-	Operation,
 	Mock,
 	UpdateContext,
 	GetContext,
@@ -20,36 +20,39 @@ type GraphQlHandler = (req: {
 	variables: Record<string, unknown>;
 }) => Promise<null | Result>;
 
+function isGraphQlMock(mock: Mock): mock is GraphQlMock {
+	return mock.method === 'GRAPHQL';
+}
+
 function getGraphQlMocks(mocks: Mock[]) {
-	const initialGraphQlMocks = mocks.filter(
-		({ method }) => method === 'GRAPHQL',
-	) as GraphQlMock[];
+	const initialGraphQlMocks = mocks.filter(isGraphQlMock);
 
-	const graphQlMocksByUrlAndOperations = initialGraphQlMocks.reduce<
-		Record<string, Record<string, Operation>>
-	>((result, mock) => {
-		const { url, operations } = mock;
+	const graphQlMocks: Record<string, GraphQlMock> = {};
 
-		const operationsByNameAndType: Record<string, Operation> = result[url]
-			? result[url]
-			: {};
+	initialGraphQlMocks.forEach((mock) => {
+		const { types = {}, queries = {}, mutations = {} } = mock;
+		const newMock = graphQlMocks[mock.url]
+			? graphQlMocks[mock.url]
+			: { ...mock };
 
-		operations.forEach((operation) => {
-			// Always take the latest operation
-			operationsByNameAndType[`${operation.name}${operation.type}`] = operation;
+		// TODO: Could make this repeatable
+		Object.entries(types).forEach(([key, value]) => {
+			newMock.types = newMock.types ? { ...newMock.types } : {};
+			newMock.types[key] = value;
+		});
+		Object.entries(queries).forEach(([key, value]) => {
+			newMock.queries = newMock.queries ? { ...newMock.queries } : {};
+			newMock.queries[key] = value;
+		});
+		Object.entries(mutations).forEach(([key, value]) => {
+			newMock.mutations = newMock.mutations ? { ...newMock.mutations } : {};
+			newMock.mutations[key] = value;
 		});
 
-		result[url] = operationsByNameAndType;
-		return result;
-	}, {});
+		graphQlMocks[mock.url] = newMock;
+	});
 
-	return Object.entries(graphQlMocksByUrlAndOperations).map(
-		([url, operationsByName]) => ({
-			method: 'GRAPHQL',
-			url,
-			operations: Object.values(operationsByName),
-		}),
-	) as GraphQlMock[];
+	return Object.values(graphQlMocks);
 }
 
 function createGraphQlHandler({
@@ -68,6 +71,7 @@ function createGraphQlHandler({
 			operationName === operationNameToCheck
 		) {
 			const result = await handler({
+				operationName,
 				variables,
 			});
 
@@ -87,10 +91,70 @@ const bodySchema = z
 	.default({})
 	.catch({});
 
-async function internalGraphQlRequestHandler(
-	req: InternalRequest,
-	handlers: GraphQlHandler[],
-) {
+function getGraphQlMock(path: string, graphqlMocks: GraphQlMock[]) {
+	return graphqlMocks.find((graphQlMock) => graphQlMock.url === path) || null;
+}
+
+function getQueries({
+	graphQlMock,
+	updateContext,
+	getContext,
+}: {
+	graphQlMock: GraphQlMock;
+	updateContext: UpdateContext;
+	getContext: GetContext;
+}) {
+	if (!graphQlMock.queries) {
+		return [];
+	}
+
+	return Object.entries(graphQlMock.queries).map(([queryName, resolver]) =>
+		createGraphQlHandler({
+			queryName,
+			resolver,
+			updateContext,
+			getContext,
+		}),
+	);
+}
+
+function getMutations({
+	graphQlMock,
+	updateContext,
+	getContext,
+}: {
+	graphQlMock: GraphQlMock;
+	updateContext: UpdateContext;
+	getContext: GetContext;
+}) {
+	return graphQlMock.operations
+		.filter(({ type }) => type === 'mutation')
+		.map((operation) =>
+			createGraphQlHandler({
+				...operation,
+				updateContext,
+				getContext,
+			}),
+		);
+}
+
+function isOperationDefinition(
+	definition: DefinitionNode,
+): definition is OperationDefinitionNode {
+	return definition.kind === Kind.OPERATION_DEFINITION;
+}
+
+async function graphQlRequestHandler({
+	req,
+	graphQlMock,
+	updateContext,
+	getContext,
+}: {
+	req: InternalRequest;
+	graphQlMock: GraphQlMock;
+	updateContext: UpdateContext;
+	getContext: GetContext;
+}): Promise<Result> {
 	let query: string;
 	const body = bodySchema.parse(req.body);
 
@@ -115,21 +179,12 @@ async function internalGraphQlRequestHandler(
 		return result;
 	}
 
-	const operationTypesAndNames = (
-		graphqlAst.definitions as Array<{
-			kind: string;
-			operation: 'query' | 'mutation';
-			name?: { value: string };
-		}>
-	)
-		.filter(({ kind }) => kind === 'OperationDefinition')
-		.map(({ operation, name }) => ({
-			type: operation,
-			name: name && name.value,
-		}));
+	const operationDefitions = graphqlAst.definitions.filter(
+		isOperationDefinition,
+	);
 
 	if (
-		operationTypesAndNames.length > 1 &&
+		operationDefitions.length > 1 &&
 		!body.operationName &&
 		!req.query.operationName
 	) {
@@ -139,40 +194,40 @@ async function internalGraphQlRequestHandler(
 				'Content-Type': 'application/json',
 			},
 			response: {
-				message: `query "${query}" is not a valid GraphQL query`,
+				message: `operationName required for query "${query}"`,
 			},
 		};
 
 		return result;
 	}
 
-	const operationName: string =
+	const operationName =
 		body.operationName ||
 		req.query.operationName ||
-		operationTypesAndNames[0].name ||
-		'';
+		// Select the first operation
+		operationDefitions[0].name;
 
-	const operationTypeAndName = operationTypesAndNames.find(
-		({ name }) => name === operationName,
+	const operationDefinition = operationDefitions.find(
+		(definition) => definition.name === operationName,
 	);
 
-	if (!operationTypeAndName) {
+	if (!operationDefinition) {
 		const result = {
 			status: 400,
 			headers: {
 				'Content-Type': 'application/json',
 			},
 			response: {
-				message: `operation name "${operationName}" does not exist in GraphQL query`,
+				message: `Operation ${operationName} could not be found`,
 			},
 		};
 
 		return result;
 	}
 
-	const operationType = operationTypeAndName.type;
+	const operationType = operationDefinition.operation;
 
-	let variables = body.variables;
+	let variables: Record<string, unknown> | undefined = body.variables;
 	if (variables === undefined && req.query.variables) {
 		try {
 			variables = JSON.parse(req.query.variables);
@@ -182,100 +237,59 @@ async function internalGraphQlRequestHandler(
 	}
 	variables = variables || {};
 
-	for (const handler of handlers) {
-		const result = await handler({
-			operationType,
-			operationName,
-			variables,
-		});
+	console.log({ operationName, operationType, variables, query });
 
-		if (result) {
-			return result;
-		}
-	}
+	// TODO: This is where the magic needs to happen
+	// TODO: Look for resolver based on gql request
+	const promises = operationDefinition.selectionSet.selections.map(
+		(selection) => {
+			if (selection.kind !== Kind.FIELD) {
+				throw new Error('Only Kind.FIELD currently supported');
+			}
+
+			if (!graphQlMock.queries) {
+				return Promise.resolve(null);
+			}
+
+			const resolver = graphQlMock.queries[selection.name.value];
+
+			if (typeof resolver === 'function') {
+				return Promise.resolve(
+					resolver({
+						context: getContext(),
+						updateContext,
+						operationName: (operationName as string) || '',
+						variables: variables as Record<string, unknown>,
+					}),
+				);
+			}
+
+			return Promise.resolve(resolver);
+		},
+	);
+
+	const results = await Promise.all(promises);
+	console.dir(results, { depth: null });
+
+	console.log('graphqlAst');
+	console.dir(graphqlAst, { depth: null });
+
+	const schemaAst = gql(graphQlMock.schema);
+
+	// console.log('schemaAst');
+	// console.dir(schemaAst, { depth: null });
+
+	// for (const handler of handlers) {
+	// 	const result = await handler({
+	// 		operationType,
+	// 		operationName,
+	// 		variables,
+	// 	});
+
+	// 	if (result) {
+	// 		return result;
+	// 	}
+	// }
 
 	return { status: 404 };
-}
-
-function getGraphQlMock(path: string, graphqlMocks: GraphQlMock[]) {
-	return graphqlMocks.find((graphQlMock) => graphQlMock.url === path) || null;
-}
-
-function getQueries({
-	graphQlMock,
-	updateContext,
-	getContext,
-}: {
-	graphQlMock: GraphQlMock;
-	updateContext: UpdateContext;
-	getContext: GetContext;
-}) {
-	return graphQlMock.operations
-		.filter(({ type }) => type === 'query')
-		.map((operation) =>
-			createGraphQlHandler({
-				...operation,
-				updateContext,
-				getContext,
-			}),
-		);
-}
-
-function getMutations({
-	graphQlMock,
-	updateContext,
-	getContext,
-}: {
-	graphQlMock: GraphQlMock;
-	updateContext: UpdateContext;
-	getContext: GetContext;
-}) {
-	return graphQlMock.operations
-		.filter(({ type }) => type === 'mutation')
-		.map((operation) =>
-			createGraphQlHandler({
-				...operation,
-				updateContext,
-				getContext,
-			}),
-		);
-}
-
-function graphQlRequestHandler({
-	req,
-	graphQlMock,
-	updateContext,
-	getContext,
-}: {
-	req: InternalRequest;
-	graphQlMock: GraphQlMock;
-	updateContext: UpdateContext;
-	getContext: GetContext;
-}): Promise<Result> {
-	if (req.method === 'GET') {
-		const queries = getQueries({
-			graphQlMock,
-			updateContext,
-			getContext,
-		});
-
-		return internalGraphQlRequestHandler(req, queries);
-	}
-
-	if (req.method === 'POST') {
-		const queries = getQueries({
-			graphQlMock,
-			updateContext,
-			getContext,
-		});
-		const mutations = getMutations({
-			graphQlMock,
-			updateContext,
-			getContext,
-		});
-
-		return internalGraphQlRequestHandler(req, queries.concat(mutations));
-	}
-
-	return Promise.resolve({ status: 404 });
 }

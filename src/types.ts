@@ -44,7 +44,12 @@ export type MockResponse<TInput, TResponse> =
 	| TResponse
 	| ResponseFunction<TInput, TResponse>;
 
-type HttpResponse = Record<string, unknown> | string | null;
+type HttpResponse =
+	| Record<string, unknown>
+	| string
+	| number
+	| unknown[]
+	| null;
 
 export type ResponseProps<TInput, TResponse> = {
 	response?: MockResponse<
@@ -70,25 +75,47 @@ export type HttpMock = {
 	HttpResponse
 >;
 
-type GraphQlResponse = {
-	data?: null | Record<string, unknown>;
-	errors?: Array<unknown>;
+type GraphQlOptions = {
+	variables: Record<string, unknown>;
+	operationName: string;
 };
 
-export type Operation = {
-	type: 'query' | 'mutation';
-	name: string;
-} & ResponseProps<
-	{
-		variables: Record<string, unknown>;
-	},
-	GraphQlResponse
+type GraphQlResolverValue = MockResponse<
+	GraphQlOptions,
+	| string
+	| number
+	| null
+	| boolean
+	| undefined
+	| Array<GraphQlResolverValue>
+	| GraphQlResolverValueRecord
 >;
+
+type GraphQlResolverValueRecord = {
+	[key: string]: GraphQlResolverValue;
+};
+
+type GraphQlResponse = {
+	delay?: number;
+	data: GraphQlResolverValue;
+	errors?: Array<{
+		message: string;
+		locations?: Array<{ line: number; column: number }>;
+		path?: Array<string | number>;
+		extensions?: Record<string, unknown>;
+	}>;
+};
+
+type QueryOrMutation = MockResponse<GraphQlOptions, GraphQlResponse>;
 
 export type GraphQlMock = {
 	url: string;
 	method: 'GRAPHQL';
-	operations: Array<Operation>;
+	schema: string;
+	context?: Context;
+	types?: Record<string, GraphQlResolverValue>;
+	queries?: Record<string, QueryOrMutation>;
+	mutations?: Record<string, QueryOrMutation>;
 };
 
 export type Mock = HttpMock | GraphQlMock;
