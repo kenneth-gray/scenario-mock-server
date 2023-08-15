@@ -1,6 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ServerWithKill } from 'server-with-kill';
-import { describe, it, expect } from 'vitest';
+import {
+	describe,
+	it,
+	expect,
+	beforeEach,
+	afterEach,
+	vi,
+	SpyInstance,
+} from 'vitest';
 import fetch from 'node-fetch';
 
 import { run } from './index';
@@ -1360,16 +1368,33 @@ describe('run', () => {
 			});
 		});
 
-		it('throw errors in app when scenarios have groups but no name has been defined', () => {
-			expect(() => {
-				run({
+		describe('warns in app when scenarios have groups but no name has been defined', () => {
+			let consoleWarn: SpyInstance;
+			let consoleWarning: string;
+			beforeEach(() => {
+				consoleWarn = vi
+					.spyOn(console, 'warn')
+					.mockImplementationOnce((warning) => (consoleWarning = warning));
+			});
+
+			it('', async () => {
+				const server = run({
 					scenarios: { test: { group: 'no-label', mocks: [] } },
 					options: {
 						groupsPath: '/api/groups',
 					},
 					groups: { animal: 'Elephant', bear: 'Polar' },
 				});
-			}).toThrowError();
+
+				await serverTest(server, () => {
+					expect(consoleWarn).toHaveBeenCalled();
+					expect(consoleWarning).toContain('no-label');
+				});
+			});
+
+			afterEach(() => {
+				consoleWarn.mockReset();
+			});
 		});
 	});
 
