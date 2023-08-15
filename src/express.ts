@@ -56,7 +56,7 @@ function validateAllGroupsHaveNames({
 	const groupsWithoutNames = uniqueGroups.filter((group) => !groups[group]);
 
 	if (groupsWithoutNames.length > 0) {
-		throw new Error(
+		console.warn(
 			`The following groups do not have a name: ${groupsWithoutNames.join(
 				', ',
 			)}`,

@@ -73,6 +73,8 @@ function CallToActionButton() {
 	);
 }
 
+const NULL_GROUP_ID = 'sms-other';
+
 function GroupedScenarios({
 	groups,
 	scenarios,
@@ -80,17 +82,24 @@ function GroupedScenarios({
 	groups: Record<string, string>;
 	scenarios: Array<ApiScenario>;
 }) {
-	const otherId = 'other';
 	const groupedScenarios: Record<string, Array<ApiScenario>> = {};
 
 	scenarios.forEach((scenario) => {
-		const group = scenario.group === null ? otherId : scenario.group;
+		const group = scenario.group === null ? NULL_GROUP_ID : scenario.group;
 
 		groupedScenarios[group] = groupedScenarios[group] || [];
 		groupedScenarios[group].push(scenario);
 	});
 
-	const groupEntries = Object.entries(groups).concat([[otherId, 'Other']]);
+	const groupsWithLabelIds = Object.keys(groups);
+	const groupsWithoutLabelIds = Object.keys(groupedScenarios).filter(
+		(groupId) =>
+			!groupsWithLabelIds.includes(groupId) && groupId !== NULL_GROUP_ID,
+	);
+
+	const groupEntries = Object.entries(groups)
+		.concat(groupsWithoutLabelIds.map((groupId) => [groupId, groupId]))
+		.concat([[NULL_GROUP_ID, 'Other']]);
 
 	return (
 		<>
